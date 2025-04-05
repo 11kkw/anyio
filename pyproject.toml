@@ -10,7 +10,7 @@ name = "anyio"
 description = "High level compatibility layer for multiple asynchronous event loop implementations"
 readme = "README.rst"
 authors = [{name = "Alex Grönholm", email = "alex.gronholm@nextday.fi"}]
-license = "MIT"
+license = { text = "MIT" }
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",

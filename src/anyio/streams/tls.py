@@ -5,7 +5,7 @@ import re
 import ssl
 import sys
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import wraps
 from typing import Any, TypeVar
 
@@ -75,6 +75,7 @@ class TLSStream(ByteStream):
     _ssl_object: ssl.SSLObject
     _read_bio: ssl.MemoryBIO
     _write_bio: ssl.MemoryBIO
+    _buffer: bytearray = field(init=False, default_factory=bytearray)
 
     @classmethod
     async def wrap(
@@ -216,11 +217,24 @@ class TLSStream(ByteStream):
         await self.transport_stream.aclose()
 
     async def receive(self, max_bytes: int = 65536) -> bytes:
+        if self._buffer:
+            data = bytes(self._buffer[:max_bytes])
+            del self._buffer[:max_bytes]
+            return data
+
         data = await self._call_sslobject_method(self._ssl_object.read, max_bytes)
         if not data:
             raise EndOfStream
 
         return data
+
+    async def peek(self, max_bytes: int = 65336) -> bytes:
+        if not self._buffer:
+            data = await self._call_sslobject_method(self._ssl_object.read, max_bytes)
+            if not data:
+                raise EndOfStream
+            self._buffer.extend(data)
+        return bytes(self._buffer[:max_bytes])
 
     async def send(self, item: bytes) -> None:
         await self._call_sslobject_method(self._ssl_object.write, item)
