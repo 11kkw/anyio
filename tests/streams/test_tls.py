@@ -58,6 +58,38 @@ class TestTLSStream:
         server_sock.close()
         assert response == b"olleh"
 
+    async def test_send_peek(
+        self, server_context: ssl.SSLContext, client_context: ssl.SSLContext
+    ) -> None:
+        def serve_sync() -> None:
+            conn, addr = server_sock.accept()
+            conn.settimeout(1)
+            data = conn.recv(10)
+            conn.send(data[::-1])
+            conn.close()
+
+        server_sock = server_context.wrap_socket(
+            socket.socket(), server_side=True, suppress_ragged_eofs=False
+        )
+        server_sock.settimeout(1)
+        server_sock.bind(("127.0.0.1", 0))
+        server_sock.listen()
+        server_thread = Thread(target=serve_sync)
+        server_thread.start()
+
+        async with await connect_tcp(*server_sock.getsockname()) as stream:
+            wrapper = await TLSStream.wrap(
+                stream, hostname="localhost", ssl_context=client_context
+            )
+            await wrapper.send(b"hello")
+            peeked = await wrapper.peek()
+            assert peeked == b"olleh"
+            response = await wrapper.receive()
+
+        server_thread.join()
+        server_sock.close()
+        assert peeked == response
+
     async def test_extra_attributes(
         self, server_context: ssl.SSLContext, client_context: ssl.SSLContext
     ) -> None:

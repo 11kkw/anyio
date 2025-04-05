@@ -99,6 +99,20 @@ class SocketStream(ByteStream, _SocketProvider):
     Supports all relevant extra attributes from :class:`~SocketAttribute`.
     """
 
+    @abstractmethod
+    async def peek(self, max_bytes: int = 65536) -> bytes:
+        """
+        Peek at up to ``max_bytes`` bytes from the peer without consuming them.
+
+        .. note:: Implementers of this interface should not return an empty
+           :class:`bytes` object. The data returned by this method remains available
+           for subsequent calls to :meth:`receive` or further :meth:`peek` calls.
+
+        :param max_bytes: The maximum number of bytes to peek.
+        :return: The bytes peeked from the peer without removing them from the internal buffer.
+        :raises ~anyio.EndOfStream: If this stream has been closed from the other end.
+        """
+
 
 class UNIXSocketStream(SocketStream):
     @abstractmethod

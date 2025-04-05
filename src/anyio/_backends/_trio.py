@@ -444,6 +444,24 @@ class SocketStream(_TrioSocketMixin, abc.SocketStream):
     async def send_eof(self) -> None:
         self._trio_socket.shutdown(socket.SHUT_WR)
 
+    async def peek(self, max_bytes: int = 65536) -> bytes:
+        with self._receive_guard:
+            try:
+                await wait_readable(self._raw_socket)
+            except BaseException as exc:
+                self._convert_socket_error(exc)
+            try:
+                data = self._raw_socket.recv(max_bytes, socket.MSG_PEEK)
+            except BaseException as exc:
+                self._convert_socket_error(exc)
+            if data:
+                return data
+            else:
+                if self._closed:
+                    raise ClosedResourceError from None
+                else:
+                    raise EndOfStream from None
+
 
 class UNIXSocketStream(SocketStream, abc.UNIXSocketStream):
     async def receive_fds(self, msglen: int, maxfds: int) -> tuple[bytes, list[int]]:

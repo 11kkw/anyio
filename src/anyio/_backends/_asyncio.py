@@ -1278,6 +1278,36 @@ class SocketStream(abc.SocketStream):
 
         return chunk
 
+    async def peek(self, max_bytes: int = 65536) -> bytes:
+        with self._receive_guard:
+            if (
+                not self._protocol.read_event.is_set()
+                and not self._transport.is_closing()
+                and not self._protocol.is_at_eof
+            ):
+                self._transport.resume_reading()
+                await self._protocol.read_event.wait()
+                self._transport.pause_reading()
+            else:
+                await AsyncIOBackend.checkpoint()
+
+            if not self._protocol.read_queue:
+                if self._closed:
+                    raise ClosedResourceError from None
+                elif self._protocol.exception:
+                    raise self._protocol.exception from None
+                else:
+                    raise EndOfStream from None
+
+            peeked = bytearray()
+            for chunk in self._protocol.read_queue:
+                remaining = max_bytes - len(peeked)
+                if remaining <= 0:
+                    break
+                peeked.extend(chunk[:remaining])
+
+        return bytes(peeked)
+
     async def send(self, item: bytes) -> None:
         with self._send_guard:
             await AsyncIOBackend.checkpoint()
@@ -1374,6 +1404,26 @@ class UNIXSocketStream(_RawSocketMixin, abc.UNIXSocketStream):
             while True:
                 try:
                     data = self._raw_socket.recv(max_bytes)
+                except BlockingIOError:
+                    await self._wait_until_readable(loop)
+                except OSError as exc:
+                    if self._closing:
+                        raise ClosedResourceError from None
+                    else:
+                        raise BrokenResourceError from exc
+                else:
+                    if not data:
+                        raise EndOfStream
+
+                    return data
+
+    async def peek(self, max_bytes: int = 65536) -> bytes:
+        loop = get_running_loop()
+        await AsyncIOBackend.checkpoint()
+        with self._receive_guard:
+            while True:
+                try:
+                    data = self._raw_socket.recv(max_bytes, socket.MSG_PEEK)
                 except BlockingIOError:
                     await self._wait_until_readable(loop)
                 except OSError as exc:

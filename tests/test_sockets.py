@@ -224,6 +224,44 @@ class TestTCPStream:
         thread.join()
         assert response == buffer
 
+    async def test_send_peek(
+        self, server_sock: socket.socket, server_addr: tuple[str, int]
+    ) -> None:
+        async with await connect_tcp(*server_addr) as stream:
+            client, _ = server_sock.accept()
+            client.send(b"blash")
+            peeked = await stream.peek(100)
+            assert peeked == b"blash"
+            response = await stream.receive(100)
+            assert response == b"blash"
+
+            client.close()
+
+    async def test_send_large_buffer_peek(
+        self, server_sock: socket.socket, server_addr: tuple[str, int]
+    ) -> None:
+        def serve() -> None:
+            client, _ = server_sock.accept()
+            client.sendall(buffer)
+            client.close()
+
+        buffer = b"\xff" * (1024 * 1024)
+        async with await connect_tcp(*server_addr) as stream:
+            thread = Thread(target=serve, daemon=True)
+            thread.start()
+
+            peeked = await stream.peek(8192)
+            assert peeked == buffer[:8192]
+
+            response = b""
+            while len(response) < len(buffer):
+                chunk = await stream.receive()
+                assert isinstance(chunk, bytes)
+                response += chunk
+
+            thread.join()
+            assert response == buffer
+
     async def test_send_eof(
         self, server_sock: socket.socket, server_addr: tuple[str, int]
     ) -> None:
@@ -388,6 +426,24 @@ class TestTCPStream:
 
                 pytest.fail("The timeout was not respected")
 
+    async def test_peek_timeout(
+        self, server_sock: socket.socket, server_addr: tuple[str, int]
+    ) -> None:
+        def serve() -> None:
+            conn, _ = server_sock.accept()
+            time.sleep(1)
+            conn.close()
+
+        thread = Thread(target=serve, daemon=True)
+        thread.start()
+        async with await connect_tcp(*server_addr) as stream:
+            start_time = time.monotonic()
+            with move_on_after(0.1):
+                while time.monotonic() - start_time < 0.3:
+                    await stream.peek(1)
+
+                pytest.fail("The timeout was not respected")
+
     async def test_concurrent_send(self, server_addr: tuple[str, int]) -> None:
         async def send_data() -> NoReturn:
             while True:
@@ -416,6 +472,19 @@ class TestTCPStream:
                 finally:
                     tg.cancel_scope.cancel()
 
+    async def test_concurrent_peek(self, server_addr: tuple[str, int]) -> None:
+        async with await connect_tcp(*server_addr) as client:
+            async with create_task_group() as tg:
+                tg.start_soon(client.peek)
+                await wait_all_tasks_blocked()
+                try:
+                    with pytest.raises(BusyResourceError) as exc:
+                        await client.peek()
+
+                    exc.match("already reading from")
+                finally:
+                    tg.cancel_scope.cancel()
+
     async def test_close_during_receive(self, server_addr: tuple[str, int]) -> None:
         async def interrupt() -> None:
             await wait_all_tasks_blocked()
@@ -427,11 +496,28 @@ class TestTCPStream:
                 with pytest.raises(ClosedResourceError):
                     await stream.receive()
 
+    async def test_close_during_peek(self, server_addr: tuple[str, int]) -> None:
+        async def interrupt() -> None:
+            await wait_all_tasks_blocked()
+            await stream.aclose()
+
+        async with await connect_tcp(*server_addr) as stream:
+            async with create_task_group() as tg:
+                tg.start_soon(interrupt)
+                with pytest.raises(ClosedResourceError):
+                    await stream.peek()
+
     async def test_receive_after_close(self, server_addr: tuple[str, int]) -> None:
         stream = await connect_tcp(*server_addr)
         await stream.aclose()
         with pytest.raises(ClosedResourceError):
             await stream.receive()
+
+    async def test_peek_after_close(self, server_addr: tuple[str, int]) -> None:
+        stream = await connect_tcp(*server_addr)
+        await stream.aclose()
+        with pytest.raises(ClosedResourceError):
+            await stream.peek()
 
     async def test_send_after_close(self, server_addr: tuple[str, int]) -> None:
         stream = await connect_tcp(*server_addr)
@@ -844,6 +930,19 @@ class TestUNIXStream:
 
         assert response == b"halb"
 
+    async def test_send_peek(
+        self, server_sock: socket.socket, socket_path_or_str: Path | str
+    ) -> None:
+        async with await connect_unix(socket_path_or_str) as stream:
+            client, _ = server_sock.accept()
+            client.send(b"blash")
+            peeked = await stream.peek(100)
+            assert peeked == b"blash"
+            response = await stream.receive(100)
+            assert response == b"blash"
+
+            client.close()
+
     async def test_receive_large_buffer(
         self, server_sock: socket.socket, socket_path: Path
     ) -> None:
@@ -862,6 +961,28 @@ class TestUNIXStream:
             while len(response) < len(buffer):
                 response += await stream.receive()
 
+        thread.join()
+        assert response == buffer
+
+    async def test_peek_large_buffer(
+        self, server_sock: socket.socket, socket_path: Path
+    ) -> None:
+        def serve() -> None:
+            client, _ = server_sock.accept()
+            client.sendall(buffer)
+            client.close()
+
+        buffer = b"\xff" * 1024 * 512 + b"\x00" * 1024 * 512
+        async with await connect_unix(socket_path) as stream:
+            thread = Thread(target=serve, daemon=True)
+            thread.start()
+
+            peeked = await stream.peek(8192)
+            assert peeked == buffer[:8192]
+
+            response = b""
+            while len(response) < len(buffer):
+                response += await stream.receive()
         thread.join()
         assert response == buffer
 
@@ -1057,6 +1178,21 @@ class TestUNIXStream:
                 finally:
                     tg.cancel_scope.cancel()
 
+    async def test_concurrent_peek(
+        self, server_sock: socket.socket, socket_path: Path
+    ) -> None:
+        async with await connect_unix(socket_path) as client:
+            async with create_task_group() as tg:
+                tg.start_soon(client.peek)
+                await wait_all_tasks_blocked()
+                try:
+                    with pytest.raises(BusyResourceError) as exc:
+                        await client.peek()
+
+                    exc.match("already reading from")
+                finally:
+                    tg.cancel_scope.cancel()
+
     async def test_close_during_receive(
         self, server_sock: socket.socket, socket_path: Path
     ) -> None:
@@ -1070,6 +1206,19 @@ class TestUNIXStream:
                 with pytest.raises(ClosedResourceError):
                     await stream.receive()
 
+    async def test_close_during_peek(
+        self, server_sock: socket.socket, socket_path: Path
+    ) -> None:
+        async def interrupt() -> None:
+            await wait_all_tasks_blocked()
+            await stream.aclose()
+
+        async with await connect_unix(socket_path) as stream:
+            async with create_task_group() as tg:
+                tg.start_soon(interrupt)
+                with pytest.raises(ClosedResourceError):
+                    await stream.peek()
+
     async def test_receive_after_close(
         self, server_sock: socket.socket, socket_path: Path
     ) -> None:
@@ -1077,6 +1226,14 @@ class TestUNIXStream:
         await stream.aclose()
         with pytest.raises(ClosedResourceError):
             await stream.receive()
+
+    async def test_peek_after_close(
+        self, server_sock: socket.socket, socket_path: Path
+    ) -> None:
+        stream = await connect_unix(socket_path)
+        await stream.aclose()
+        with pytest.raises(ClosedResourceError):
+            await stream.peek()
 
     async def test_send_after_close(
         self, server_sock: socket.socket, socket_path: Path
